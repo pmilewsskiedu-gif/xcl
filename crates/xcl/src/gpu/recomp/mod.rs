@@ -1427,7 +1427,11 @@ pub fn translate(code: &[u8], opt: &Options) -> Result<Translation, String> {
     // a wave64 VS / PS on a GPU that can run 32-lane waves: what lanes 32..63 hold where the
     // program reads them (the driver may still pick 64 lanes: decided at run time); only a
     // program with a read to change gets the form
-    if opt.wave64 && opt.split_wave64 && matches!(opt.mode, Mode::Vertex(_) | Mode::Pixel(_)) {
+    if opt.wave64
+        && opt.split_wave64
+        && matches!(opt.mode, Mode::Vertex(_) | Mode::Pixel(_))
+        && upper_lanes::has_readers(&insts)
+    {
         let a = upper_lanes::analyze(&insts);
         if a.reads.values().any(|r| matches!(r, upper_lanes::Read::Const(_) | upper_lanes::Read::Shadow)) {
             em.upper = Some(a);

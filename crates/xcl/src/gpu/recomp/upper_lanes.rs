@@ -749,6 +749,12 @@ thread_local! {
     pub static TRACE: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
 }
 
+/// No upper-lane state reaches the emitter without a read of a lane. Avoid the
+/// CFG and data-flow work for programs that only write lanes or use local VALU.
+pub fn has_readers(insts: &[Decoded]) -> bool {
+    insts.iter().any(|d| matches!(d.inst.name, "V_READLANE_B32" | "DS_BPERMUTE_B32" | "DS_PERMUTE_B32"))
+}
+
 /// The analysis of a whole program (instructions in address order, far jumps resolved).
 pub fn analyze(insts: &[Decoded]) -> UpperLanes {
     let mut out = UpperLanes::default();
@@ -841,6 +847,36 @@ mod tests {
         let p = program(lines);
         let a = analyze(&p);
         p.iter().filter_map(|d| a.reads.get(&d.pc).copied()).collect()
+    }
+
+    #[test]
+    fn reader_free_programs_need_no_upper_lane_analysis() {
+        let plain = program(&[
+            ("V_MOV_B32", "ENC_VOP1", &[("VDST", 7), ("SRC0", 128)], None),
+            ("S_MOV_B32", "ENC_SOP1", &[("SDST", 5), ("SSRC0", 128)], None),
+        ]);
+        assert!(!has_readers(&plain));
+        let analyzed = analyze(&plain);
+        assert!(analyzed.reads.is_empty());
+        assert!(analyzed.shadows.is_empty());
+        let write_only = program(&[("V_WRITELANE_B32", "ENC_VOP3", &[("VDST", 7), ("SRC0", 20), ("SRC1", 128 + 5)], None)]);
+        assert!(!has_readers(&write_only));
+        let analyzed = analyze(&write_only);
+        assert!(analyzed.reads.is_empty());
+        assert!(analyzed.shadows.is_empty());
+        for read in [
+            ("V_READLANE_B32", "ENC_VOP3", &[("VDST", 20), ("SRC0", V + 7), ("SRC1", 128 + 5)][..], None),
+            ("DS_BPERMUTE_B32", "ENC_DS", &[("VDST", 8), ("ADDR", 7), ("DATA0", 7)][..], None),
+            ("DS_PERMUTE_B32", "ENC_DS", &[("VDST", 8), ("ADDR", 7), ("DATA0", 7)][..], None),
+        ] {
+            assert!(has_readers(&program(&[read])), "{:?}", read.0);
+        }
+        let low_lane_shadow = program(&[
+            ("V_WRITELANE_B32", "ENC_VOP3", &[("VDST", 7), ("SRC0", 20), ("SRC1", 128 + 5)], None),
+            ("V_READLANE_B32", "ENC_VOP3", &[("VDST", 20), ("SRC0", V + 7), ("SRC1", 128 + 5)], None),
+        ]);
+        assert!(has_readers(&low_lane_shadow));
+        assert!(analyze(&low_lane_shadow).reads.values().any(|r| *r == Read::Shadow));
     }
 
     // the reduction of the retail pixel shaders: identity into the lanes outside the mask,
